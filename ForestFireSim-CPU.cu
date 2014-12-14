@@ -1,36 +1,11 @@
 #include "cuda_runtime.h"
 #include "device_launch_parameters.h"
 #include <stdio.h>
-#include <stdlib.h> // rand, srand
 #include <time.h> 
 #include <omp.h>
+#include <stdlib.h> // rand, srand    for cpu
 
-#define BLOCK_SIZE 16
-
-// Midway point of fire
-unsigned int middle       = 0; 
-
-// number of phases, and probability of igniting
-int fireSpreadPhases      = 0;
-int fireSpreadProbability = 0;
-
-__global__ void spreadFireGPU(int *a, int *b, int N)
-{
-	// calculate the row and column index of the element
-	int row = blockIdx.y * blockDim.y + threadIdx.y;
-	int col = blockIdx.x * blockDim.x + threadIdx.x;
-
-
-	b[row * N + col] = 1;
-
-	if(a[row*N+col] == 0){			b[row*N+col] = 0; } // do nothing
-	else if(a[row * N + col] == 1){ b[row*N+col] = 1; }
-	else if(a[row * N + col] == 2){ b[row*N+col] = 2; }
-}
-
-
-
-void spreadFireCPU(int *a, int *b, int N)
+void spreadFireCPU(int *a, int *b, int N, int fireSpreadPhases, int fireSpreadProbability)
 {
 	srand(time(NULL));
 
@@ -54,10 +29,15 @@ void spreadFireCPU(int *a, int *b, int N)
 						// check the neighbourhood - cellular automata
 						// if a neighbouring element has a tree that is on fire
 						// then randomly see if the element itself is going to be ignited
+
+						// The ones highlighted out, are those that I could not get to work with
+						// shared memory indexing on the GPU implementation - but a fair comparison is
+						// needed regardless.
 						if(a[index + N] == 2 || a[index - N] == 2 ||
 						   a[index + 1] == 2 || a[index - 1] == 2 ||
 						   a[(index + N) - 1] == 2 || a[(index + N) + 1] == 2 ||
-						   a[(index - N) - 1] == 2 || a[(index - N) + 1] == 2)
+						   a[(index - N) - 1] == 2 || a[(index - N) + 1] == 2 
+						   )
 						{
 							if(rand() % 100 < fireSpreadProbability) 
 								b[index] = 2;
@@ -88,22 +68,18 @@ void spreadFireCPU(int *a, int *b, int N)
 int main()
 {
 	// Number of elements (NxN)
-	int N    = 20;
+	int N    = 1024;
+
+	// number of phases, and probability of igniting
+	int fireSpreadPhases      = 0;
+	int fireSpreadProbability = 0;
+
+	// Midway point of fire
+	int middle                = 0; 
 
 	// host memory pointers
 	int *a_h = NULL;
 	int *b_h = NULL;
-
-	// grid and block size
-	int threads = 128;
-
-	// optimal number of blocks
-	cudaDeviceProp deviceProp;
-	cudaGetDeviceProperties(&deviceProp, 0);
-	int maxBlocks = deviceProp.maxThreadsPerMultiProcessor/threads*deviceProp.multiProcessorCount;
-
-	dim3 block(BLOCK_SIZE, BLOCK_SIZE, 1);
-	dim3 grid(maxBlocks, 1, 1);
 
 	// number of byes in the array
 	size_t memSize = (N*N) * sizeof(int); 
@@ -111,14 +87,6 @@ int main()
 	// allocate memory on the host
 	a_h = (int*) malloc(memSize);
 	b_h = (int*) malloc(memSize);
-
-	// device memory pointers
-	int *a_d = NULL;
-	int *b_d = NULL;
-
-	// allocate memory on the device
-	cudaMalloc((void**)&a_d, memSize);
-	cudaMalloc((void**)&b_d, memSize);
 
 	// Find midway point in N to determine when the fire starts
 	// Half way across the total length of the row
@@ -161,22 +129,24 @@ int main()
 		else
 		{
 			for (int j = 0; j < N; j++)
+			{
 
-				if(j == 0 || j == N - 1)
+				// modulus 16 (one per 32) for the cuda test (each block needs a burning tree - at least
+				//											  my interpretation is that each thread is local to each block)
+				if(j % 16 == 0)
+					a_h[i * N + j] = 2;
 
+				else if(j == 0 || j == N - 1)
 					a_h[i * N + j] = 0; // empty space (boundary to avoid index/memory error)
+				
 				else if(i == middle && j == middle)
-
 					a_h[i * N + j] = 2; // tree ignited
+				
 				else 
 					a_h[i * N + j] = 1;
+			}
 		}
 	}
-
-	// Copy initialisation data above to the device
-	cudaMemcpy(a_d, a_h, memSize, cudaMemcpyHostToDevice);
-	cudaMemcpy(b_d, b_h, memSize, cudaMemcpyHostToDevice);
-
 
 	// Time variables
 	float cpuTime;
@@ -186,7 +156,7 @@ int main()
 	printf("\nMeasuring CPU execution time...\n");
 
 	// perform cpu computation to determine spread of fire
-	spreadFireCPU(a_h, b_h, N);
+	spreadFireCPU(a_h, b_h, N, fireSpreadPhases, fireSpreadProbability);
 
 	float endCPU = omp_get_wtime();
 	cpuTime = (endCPU - startCPU) *1000;
@@ -194,25 +164,6 @@ int main()
 	printf("The CPU implementation speed is: %f ms \n\n", cpuTime);
 
 	// print out to be sure it is correct
-	for(int i = 0; i < N; i ++)
-	{
-		for (int j = 0; j < N; j++)
-		{
-			printf(" %i ", b_h[i * N + j]);
-		}
-		printf("\n");
-    }
-
-	// STARTING GPU Implementation
-	printf("Measuring GPU execution time...\n");
-	
-	// get number of elements
-
-	spreadFireGPU<<<grid, block>>>(a_d, b_d, N);
-
-	// collect results from GPU
-	cudaMemcpy(b_h, b_d, memSize, cudaMemcpyDeviceToHost);
-
 	//for(int i = 0; i < N; i ++)
 	//{
 	//	for (int j = 0; j < N; j++)
@@ -221,10 +172,6 @@ int main()
 	//	}
 	//	printf("\n");
     //}
-
-	// free device memory
-	cudaFree(a_d);
-	cudaFree(b_d);
 
 	// free up some memory
 	free(a_h);
