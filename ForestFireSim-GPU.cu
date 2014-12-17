@@ -6,7 +6,7 @@
 #include <stdlib.h> // rand, srand    for cpu
 #include <curand_kernel.h>
 
-#define SHARED_MEM_SIZE 64 // shared memory size
+#define BLOCK_SIZE 33// shared memory size
 
 __global__ void createRandomNumbers(int N, curandState * state, unsigned long seed)
 {
@@ -17,8 +17,6 @@ __global__ void createRandomNumbers(int N, curandState * state, unsigned long se
 
 __global__ void spreadFireGPU(int *a, int *b, int N, int fireSpreadPhases, int fireSpreadProbability, curandState *states)
 {
-	//printf("block idx %i \n ", blockIdx.x);
-
 	int tx = threadIdx.x + 1; // avoid out of bounds
 	int ty = threadIdx.y + 1; // avoid out of bounds
 
@@ -28,10 +26,15 @@ __global__ void spreadFireGPU(int *a, int *b, int N, int fireSpreadPhases, int f
 
 	int index = row * N + col;
 
-	__shared__ int s_a[SHARED_MEM_SIZE][SHARED_MEM_SIZE];
-	__shared__ int s_b[SHARED_MEM_SIZE][SHARED_MEM_SIZE];
+	//__shared__ curandState s_rand[SHARED_MEM_SIZE][SHARED_MEM_SIZE];
+	__shared__ int            s_a[BLOCK_SIZE][BLOCK_SIZE];
+	__shared__ int			  s_b[BLOCK_SIZE][BLOCK_SIZE];
 
+	// write to shared memory
 	s_a[ty][tx] = a[index];
+
+	// wait until all threads have written to shared memory
+	__syncthreads();
 
 	float fireProbability = 0;
 
@@ -47,8 +50,6 @@ __global__ void spreadFireGPU(int *a, int *b, int N, int fireSpreadPhases, int f
 				}
 				case 1:
 				{
-					//printf("check ty %f ", checkty);
-
 					// check the neighbourhood - cellular automata
 					// if a neighbouring element has a tree that is on fire
 					// then randomly see if the element itself is going to be ignited
@@ -141,8 +142,8 @@ int main()
 	int fireSpreadPhases      = 0;
 	int fireSpreadProbability = 0;
 
-	// Midway point of fire
-	int middle                = 0; 
+	// Displaying results toggle
+	int displayResults       =  0;
 
 	// host memory pointers
 	int *a_h = NULL;
@@ -151,15 +152,6 @@ int main()
 	// optimal number of blocks and threads
 	cudaDeviceProp deviceProp;
 	cudaGetDeviceProperties(&deviceProp, 0);
-
-	// Shared memory in kernel uses 32 x 32, so need to keep it that way
-	// it uses threads as an indexing source. However the amount of blocks do not
-	// have an impact. 
-	int maxThreads = 32;
-	int maxBlocks = 32;//deviceProp.maxThreadsPerMultiProcessor/maxThreads*deviceProp.multiProcessorCount;
-
-	dim3 grid(maxBlocks, maxBlocks, 1);
-	dim3 block(maxThreads, maxThreads , 1);
 
 	// number of byes in the array
 	size_t memSize = (N*N) * sizeof(int); 
@@ -177,34 +169,33 @@ int main()
 	cudaMalloc((void**)&b_d, memSize);
 
 	// STARTUP - number of simultations and the probability of fire spreading
+	printf("\nPlease define the number of elements that will be used for this simulation (between 32 and 1024): ");
+	scanf("%i", &N);
+
+	while(N < 32 || N > 1024)
+	{
+		printf("\nThe amount defined is too low, please make it between 0 and 1024: ");
+		scanf("%i", &N);
+	}
+
+	// declare threads and blocks; dim3 variables
+	int maxThreads = 32;
+	int maxBlocks = N/32;//deviceProp.maxThreadsPerMultiProcessor/maxThreads*deviceProp.multiProcessorCount;
+
+	dim3 grid(maxBlocks, maxBlocks, 1);
+	dim3 block(maxThreads, maxThreads , 1);
+
 	printf("\nThe total number of threads are %i", maxThreads);
 	printf("\nThe total number of blocks are %i", maxBlocks);
+
 	printf("\nThe total amount of elements are: %i x %i = %i.", N,N,N*N);
 
 	printf("\n\nFires in forests spread over time; please determine the amount of phases (or turns) "
-		"that there will be for this session ");
+		"that there will be for this session: ");
 	scanf("%i", &fireSpreadPhases);
 
 	printf("\nEnter the probability of fire spreading from an ignited tree to those adjacent to it (0 - 100): ");
 	scanf("%i", &fireSpreadProbability);
-
-	// INITIALISATION of tree elements
-
-	// Find midway point in N to determine when the fire starts
-	// Half way across the total length of the row
-	// And the column is half the total amount of columns
-	if(N % 2 == 0)
-		middle = N / 2; 
-	else
-	{
-		// In the case that N cannot be divided by 2 without a remainder
-		middle = N;
-
-		while (middle % 2 != 0)
-			middle += 1;  
-
-		middle = middle / 2;
-	}
 
 	// The central point will be given a value of 2 -- tree is on fire
 	// This is to determine the starting point for the simulation.
@@ -213,38 +204,26 @@ int main()
 		// first row is all  empty; as is last
 		if(i == 0 || i == N - 1)
 			for (int j = 0; j < N; j++)
-
 				a_h[i * N + j] = 0;
+
 		else
 		{
 			for (int j = 0; j < N; j++)
 			{
 				if(j % 16 == 0)
-					a_h[i * N + j] = 2;
-
-				else if(j == 0 || j == N - 1)
-					a_h[i * N + j] = 0; // empty space (boundary to avoid index/memory error)
-				
-				else if(i == middle && j == middle)
-					a_h[i * N + j] = 2; // tree ignited
+					a_h[i * N + j] = 2; // once for each 32 - so that all blocks access and use neighbours
 				
 				else 
 					a_h[i * N + j] = 1;
 			}
-
-
 		}
 	}
-
-	// middle of N - where the fire starts - middle = center of rows and cols
-	printf("\nThe starting point of the fire is at row: %i col: %i", middle, middle);
 
 	// Copy initialisation data above to the device
 	cudaMemcpy(a_d, a_h, memSize, cudaMemcpyHostToDevice);
 	cudaMemcpy(b_d, b_h, memSize, cudaMemcpyHostToDevice);
 
 	// INITIALISATION of seeds for curand (cuda version of rand() )
-
 	// create time variables so that we have a random unsigned long
 	// that will generate a different set of random numbers
 	time_t seedTime;
@@ -300,14 +279,18 @@ int main()
 	// collect results from GPU
 	cudaMemcpy(b_h, b_d, memSize, cudaMemcpyDeviceToHost);
 
-	//for(int i = 0; i < N; i ++)
-	//{
-	//	for (int j = 0; j < N; j++)
-	//	{
-	//		printf(" %i ", b_h[i * N + j]);
-	//	}
-	//	printf("\n");
-    //}
+	printf("\n\nWould you like to display the results? (1 for Y or 2 for N): ");
+	scanf("%i", &displayResults);
+
+	if(displayResults == 1)
+		for(int i = 0; i < N; i ++)
+		{
+			for (int j = 0; j < N; j++)
+			{
+				printf(" %i ", b_h[i * N + j]);
+			}
+			printf("\n");
+		}
 
 	// free device memory
 	cudaFree(a_d);

@@ -74,8 +74,8 @@ int main()
 	int fireSpreadPhases      = 0;
 	int fireSpreadProbability = 0;
 
-	// Midway point of fire
-	int middle                = 0; 
+	// Displaying results toggle
+	int displayResults        = 0;
 
 	// host memory pointers
 	int *a_h = NULL;
@@ -88,32 +88,24 @@ int main()
 	a_h = (int*) malloc(memSize);
 	b_h = (int*) malloc(memSize);
 
-	// Find midway point in N to determine when the fire starts
-	// Half way across the total length of the row
-	// And the column is half the total amount of columns
-	if(N % 2 == 0)
-		middle = N / 2; 
-	else
+	// STARTUP - number of simultations and the probability of fire spreading
+	printf("\nPlease define the number of elements that will be used for this simulation (between 32 and 1024): ");
+	scanf("%i", &N);
+
+	while(N < 32 || N > 1024)
 	{
-		// In the case that N cannot be divided by 2 without a remainder
-		middle = N;
-
-		while (middle % 2 != 0)
-			middle += 1;  
-
-		middle = middle / 2;
+		printf("\nThe amount defined is too low, please make it between 0 and 1024: ");
+		scanf("%i", &N);
 	}
 
-	// STARTUP - number of simultations and the probability of fire spreading
 	printf("\nFires in forests spread over time; please determine the amount of phases (or turns) "
-		"that there will be for this session ");
+		"that there will be for this session: ");
 	scanf("%i", &fireSpreadPhases);
 
 	printf("\nEnter the probability of fire spreading from an ignited tree to those adjacent to it (0 - 100): ");
 	scanf("%i", &fireSpreadProbability);
 
 	// middle of N - where the fire starts - middle = center of rows and cols
-	printf("\nThe starting point of the fire is at row: %i col: %i", middle, middle);
 	printf("\nThe total number of elements are:         %i \n" , N);
 
 	// Load cpu array with numbers
@@ -124,24 +116,15 @@ int main()
 		// first row is all  empty; as is last
 		if(i == 0 || i == N - 1)
 			for (int j = 0; j < N; j++)
-
 				a_h[i * N + j] = 0;
+
 		else
 		{
 			for (int j = 0; j < N; j++)
 			{
-
-				// modulus 16 (one per 32) for the cuda test (each block needs a burning tree - at least
-				//											  my interpretation is that each thread is local to each block)
 				if(j % 16 == 0)
-					a_h[i * N + j] = 2;
+					a_h[i * N + j] = 2; // once for each 32 - so that all blocks access and use neighbours
 
-				else if(j == 0 || j == N - 1)
-					a_h[i * N + j] = 0; // empty space (boundary to avoid index/memory error)
-				
-				else if(i == middle && j == middle)
-					a_h[i * N + j] = 2; // tree ignited
-				
 				else 
 					a_h[i * N + j] = 1;
 			}
@@ -163,15 +146,18 @@ int main()
 
 	printf("The CPU implementation speed is: %f ms \n\n", cpuTime);
 
-	// print out to be sure it is correct
-	//for(int i = 0; i < N; i ++)
-	//{
-	//	for (int j = 0; j < N; j++)
-	//	{
-	//		printf(" %i ", b_h[i * N + j]);
-	//	}
-	//	printf("\n");
-    //}
+	printf("\n\nWould you like to display the results? (1 for Y or 2 for N) ");
+	scanf("%i", &displayResults);
+
+	if(displayResults == 1)
+		for(int i = 0; i < N; i ++)
+		{
+			for (int j = 0; j < N; j++)
+			{
+				printf(" %i ", b_h[i * N + j]);
+			}
+			printf("\n");
+		}
 
 	// free up some memory
 	free(a_h);
